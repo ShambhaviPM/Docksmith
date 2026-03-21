@@ -1,0 +1,13 @@
+# Docksmith sample app — uses all 6 instructions
+FROM alpine:3.18
+
+WORKDIR /app
+
+ENV APP_ENV=production
+ENV GREETING=Hello
+
+COPY . /app
+
+RUN echo "Build complete. Files in /app:" && ls /app
+
+CMD ["sh", "run.sh"]
