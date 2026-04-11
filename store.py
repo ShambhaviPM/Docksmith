@@ -66,12 +66,22 @@ class Store:
 
         # Remove all layer files belonging to this image
         removed_layers = []
+        removed_layer_digests = set()
         for layer in manifest.get("layers", []):
             digest = layer["digest"]
             layer_path = self.layer_path(digest)
             if os.path.isfile(layer_path):
                 os.remove(layer_path)
                 removed_layers.append(digest[:19])  # sha256: + 12 chars
+                removed_layer_digests.add(digest)
+
+        # Drop stale cache entries that point to layers we just removed.
+        if removed_layer_digests:
+            index = self._load_cache()
+            keys_to_delete = [k for k, v in index.items() if v in removed_layer_digests]
+            for k in keys_to_delete:
+                del index[k]
+            self._save_cache(index)
 
         # Remove manifest
         os.remove(self._image_path(name, tag))

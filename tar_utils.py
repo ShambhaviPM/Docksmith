@@ -4,6 +4,15 @@ import os
 import fnmatch
 
 
+def _iter_files_recursive(path):
+    files = []
+    for root, dirs, filenames in os.walk(path):
+        dirs.sort()
+        for fname in sorted(filenames):
+            files.append(os.path.join(root, fname))
+    return files
+
+
 def make_layer_tar(src_dir, dest_prefix=""):
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
@@ -41,7 +50,6 @@ def make_layer_tar(src_dir, dest_prefix=""):
 
 
 def make_copy_layer_tar(context_dir, src_pattern, dest_path, temp_root):
-    import glob
     import shutil
 
     matched = _resolve_glob(context_dir, src_pattern)
@@ -72,12 +80,16 @@ def make_copy_layer_tar(context_dir, src_pattern, dest_path, temp_root):
 def _resolve_glob(context_dir, pattern):
     import glob as _glob
     if pattern == ".":
-        results = []
-        for root, dirs, files in os.walk(context_dir):
-            dirs.sort()
-            for fname in sorted(files):
-                results.append(os.path.join(root, fname))
-        return sorted(results)
+        return sorted(_iter_files_recursive(context_dir))
+
+    # Plain path (no glob chars) should resolve deterministically to existing path.
+    has_glob = any(ch in pattern for ch in "*?[")
+    if not has_glob:
+        candidate = os.path.join(context_dir, pattern)
+        if os.path.exists(candidate):
+            return [candidate]
+        return []
+
     full_pattern = os.path.join(context_dir, pattern)
     matches = _glob.glob(full_pattern, recursive=True)
     return sorted(matches)
@@ -129,32 +141,52 @@ def extract_layer(tar_bytes, dest_dir):
 def hash_files_for_copy(context_dir, src_pattern):
     import hashlib
 
-    if src_pattern == ".":
-        walk_root = context_dir
-    else:
-        full_path = os.path.join(context_dir, src_pattern)
-        walk_root = full_path if os.path.isdir(full_path) else None
-
     h = hashlib.sha256()
 
-    if walk_root:
-        all_files = []
-        for root, dirs, files in os.walk(walk_root):
-            dirs.sort()
-            for fname in sorted(files):
-                all_files.append(os.path.join(root, fname))
-        for fpath in sorted(all_files):
-            rel = os.path.relpath(fpath, context_dir)
-            h.update(rel.encode())
-            with open(fpath, "rb") as f:
-                h.update(f.read())
-        return h.hexdigest()
-
+    file_set = set()
     matched = _resolve_glob(context_dir, src_pattern)
-    for fpath in sorted(matched):
+    for path in matched:
+        if os.path.isfile(path):
+            file_set.add(path)
+        elif os.path.isdir(path):
+            for fpath in _iter_files_recursive(path):
+                file_set.add(fpath)
+
+    for fpath in sorted(file_set):
         if os.path.isfile(fpath):
             rel = os.path.relpath(fpath, context_dir)
             h.update(rel.encode())
             with open(fpath, "rb") as f:
                 h.update(f.read())
     return h.hexdigest()
+
+
+def apply_whiteouts(root_dir, tar_bytes):
+    """
+    Apply OCI-style whiteout entries from a layer tar.
+    A whiteout is encoded as a file named '.wh.<name>' and means
+    the sibling path '<name>' should be removed from lower layers.
+    """
+    buf = io.BytesIO(tar_bytes)
+    with tarfile.open(fileobj=buf, mode="r") as tar:
+        for member in tar.getmembers():
+            base = os.path.basename(member.name)
+            if not base.startswith(".wh."):
+                continue
+
+            dir_part = os.path.dirname(member.name)
+            target_name = base[4:]
+            if not target_name:
+                continue
+
+            target_rel = os.path.normpath(os.path.join(dir_part, target_name))
+            target_abs = os.path.realpath(os.path.join(root_dir, target_rel))
+            root_abs = os.path.realpath(root_dir)
+            if not target_abs.startswith(root_abs):
+                continue
+
+            if os.path.isdir(target_abs):
+                import shutil
+                shutil.rmtree(target_abs, ignore_errors=True)
+            elif os.path.exists(target_abs):
+                os.remove(target_abs)

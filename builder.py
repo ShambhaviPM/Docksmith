@@ -17,7 +17,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 
-from tar_utils import make_copy_layer_tar, extract_layer, hash_files_for_copy
+from tar_utils import make_copy_layer_tar, extract_layer, hash_files_for_copy, apply_whiteouts
 from cache import compute_cache_key
 from runtime import Runtime
 
@@ -51,7 +51,8 @@ class Builder:
 
         # Build state
         layers = []           # accumulated layer dicts (digest, size, createdBy)
-        env_state = {}        # accumulated ENV key→value
+        base_env_state = {}   # inherited FROM base image
+        env_overrides = {}    # ENV updates in current build
         workdir = ""          # current WORKDIR
         cmd = None            # CMD value
         base_manifest = None  # manifest of FROM image
@@ -77,11 +78,12 @@ class Builder:
                 # Inherit base layers
                 layers = list(base_manifest.get("layers", []))
                 base_config = base_manifest.get("config", {})
-                env_state = {}
+                base_env_state = {}
+                env_overrides = {}
                 for e in base_config.get("Env", []):
                     if "=" in e:
                         k, v = e.split("=", 1)
-                        env_state[k] = v
+                        base_env_state[k] = v
                 workdir = base_config.get("WorkingDir", "")
                 cmd = base_config.get("Cmd")
 
@@ -99,7 +101,7 @@ class Builder:
             if instruction == "ENV":
                 print()
                 key, _, value = args.partition("=")
-                env_state[key.strip()] = value.strip()
+                env_overrides[key.strip()] = value.strip()
                 continue
 
             # ── CMD ─────────────────────────────────────────────────────────
@@ -121,6 +123,7 @@ class Builder:
 
                 # Cache key
                 files_hash = hash_files_for_copy(self.context_dir, src)
+                env_state = _merge_env(base_env_state, env_overrides)
                 cache_key = compute_cache_key(prev_digest, full_instruction, workdir, env_state, files_hash)
 
                 step_start = time.time()
@@ -162,6 +165,7 @@ class Builder:
             # ── RUN ──────────────────────────────────────────────────────────
             if instruction == "RUN":
                 full_instruction = f"RUN {args}"
+                env_state = _merge_env(base_env_state, env_overrides)
                 cache_key = compute_cache_key(prev_digest, full_instruction, workdir, env_state)
 
                 step_start = time.time()
@@ -222,6 +226,7 @@ class Builder:
             created = now
 
         # Build env list from env_state
+        env_state = _merge_env(base_env_state, env_overrides)
         env_list = [f"{k}={v}" for k, v in sorted(env_state.items())]
 
         manifest = {
@@ -306,6 +311,7 @@ class Builder:
                 sys.exit(1)
             tar_bytes = self.store.load_layer(digest)
             extract_layer(tar_bytes, tmpdir)
+            apply_whiteouts(tmpdir, tar_bytes)
 
     def _ensure_workdir(self, rootfs, workdir):
         """Create WORKDIR inside rootfs if it doesn't exist."""
@@ -336,13 +342,15 @@ def _snapshot_dir(path):
 
 def _make_delta_tar(rootfs, snapshot_before):
     """
-    Create a tar of only the files that changed or were added since snapshot_before.
+    Create a tar of files that changed, were added, or were deleted since snapshot_before.
+    Deletions are represented as whiteout files (.wh.<name>) in the same directory.
     Returns tar bytes.
     """
     import tarfile
     import io
 
     changed = []
+    current_snapshot = {}
     for root, dirs, files in os.walk(rootfs):
         dirs.sort()
         for fname in sorted(files):
@@ -350,11 +358,14 @@ def _make_delta_tar(rootfs, snapshot_before):
             rel = os.path.relpath(full, rootfs)
             try:
                 st = os.stat(full)
+                current_snapshot[rel] = (st.st_mtime, st.st_size)
                 before = snapshot_before.get(rel)
                 if before is None or before != (st.st_mtime, st.st_size):
                     changed.append((rel, full))
             except OSError:
                 pass
+
+    deleted = sorted(set(snapshot_before.keys()) - set(current_snapshot.keys()))
 
     # Sort for reproducibility
     changed.sort(key=lambda x: x[0])
@@ -371,4 +382,24 @@ def _make_delta_tar(rootfs, snapshot_before):
             with open(full, "rb") as f:
                 tar.addfile(info, f)
 
+        for rel in deleted:
+            parent = os.path.dirname(rel)
+            name = os.path.basename(rel)
+            wh_name = os.path.join(parent, f".wh.{name}") if parent else f".wh.{name}"
+            info = tarfile.TarInfo(name=wh_name)
+            info.size = 0
+            info.mode = 0o644
+            info.mtime = 0
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            tar.addfile(info, io.BytesIO(b""))
+
     return buf.getvalue()
+
+
+def _merge_env(base_env_state, env_overrides):
+    merged = dict(base_env_state)
+    merged.update(env_overrides)
+    return merged

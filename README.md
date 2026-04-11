@@ -33,6 +33,27 @@ chmod +x docksmith.py
 python3 setup_base_image.py
 ```
 
+Or run the one-shot Linux bootstrap script:
+
+```bash
+chmod +x setup_linux.sh
+./setup_linux.sh
+```
+
+## COPY Pattern Support
+
+`COPY` supports:
+- plain paths (single file or directory), e.g. `COPY app.py /app/`
+- single-level wildcards (`*`), e.g. `COPY src/*.py /app/`
+- recursive wildcards (`**`), e.g. `COPY src/**/*.py /app/`
+
+## Build Behavior Notes
+
+- `COPY` cache hashing includes all matched files, including files discovered recursively through matched directories.
+- `RUN` delta layers include adds, edits, and deletions (deletions are encoded internally as whiteouts).
+- `ENV` values from the base image are inherited first, then overridden by `ENV` instructions in the current build.
+- `docksmith rmi` also removes stale cache-index entries that point to deleted layer digests.
+
 ## Step 1: Cold Build (all CACHE MISS)
 
 ```bash
@@ -66,6 +87,8 @@ echo "# changed" >> sample_app/run.sh
 # Rebuild — COPY and everything below it should be CACHE MISS
 python3 docksmith.py build -t myapp:latest ./sample_app
 ```
+
+Note: this also applies when files matched by `COPY` globs (`*`, `**`) are changed.
 
 ## Step 4: List Images
 
