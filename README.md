@@ -40,6 +40,18 @@ chmod +x setup_linux.sh
 ./setup_linux.sh
 ```
 
+# Incase of the SSL certificate issue run the following commands:
+```bash
+wget --no-check-certificate "https://dl-cdn.alpinelinux.org/alpine/v3.18/releases/x86_64/alpine-minirootfs-3.18.4-x86_64.tar.gz"
+python3 setup_base_image.py --local alpine-minirootfs-3.18.4-x86_64.tar.gz
+```
+
+#Also to fix the SSL certificates properly
+```bash
+sudo apt update && sudo apt install -y ca-certificates
+sudo update-ca-certificates
+```
+
 ## COPY Pattern Support
 
 `COPY` supports:
