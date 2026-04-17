@@ -20,17 +20,16 @@ sudo apt install -y python3 python3-pip util-linux
 
 ```
 docksmith/
-├── docksmith.py          # CLI entry point
-├── builder.py            # Build engine logic
-├── cache.py              # Cache key generation
-├── runtime.py            # Container runtime & isolation
-├── store.py              # Image/layer storage handling
+├── docksmith.py          # Main CLI
+├── builder.py            # Build engine
+├── cache.py              # Cache key logic
+├── runtime.py            # Container runtime + isolation
+├── store.py              # Disk state management
 ├── tar_utils.py          # Reproducible tar creation
-├── setup_base_image.py   # Base image setup (one-time)
+├── setup_base_image.py   # One-time base image import
 └── sample_app/
     ├── Docksmithfile
     └── run.sh
-
 ```
 
 ## Step 0: Install + First-time Setup
